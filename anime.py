@@ -19,8 +19,13 @@ class Anime:
 		self.coms       = coms
 		return
 
+	def rating(self):
+		if self.fields['rating'] is None:
+			return -1
+		return self.fields['rating']
+
 	def __lt__(lhs, rhs):
-		return lhs.fields['rating'] < rhs.fields['rating']
+		return lhs.rating() < rhs.rating()
 
 
 

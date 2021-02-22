@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import datetime as dt
+import os
 import pickle
 import requests as req
 import time
@@ -18,7 +19,21 @@ from anime import Anime
 
 
 # objects
-rating      = [ { 'href' : 'http://www.world-art.ru/animation/animation.php?id=3' } ]
+rating      = [
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=1' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=8026' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=2763' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=3996' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=6681' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=6998' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=7' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=8' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=9' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=10' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=11' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=12' },
+	#  { 'score' : 0, 'href' : 'http://www.world-art.ru/animation/animation.php?id=13' }
+]
 rating_lock = thd.Lock()
 rating_i    = 0
 
@@ -33,6 +48,9 @@ total_time = None
 max_tag_len = 0
 max_ann_len = 0
 max_com_len = 0
+
+start_time = None
+end_time = None
 
 stdout_lock = thd.Lock()
 
@@ -62,13 +80,15 @@ class Parser (thd.Thread):
 
 				# try parse
 				while True:
-					text = req.get(rat['href']).text
-					soup = BeautifulSoup(text, 'lxml')
-					a = parse_anime(soup)
-					if a is not None:
-						a.fields['bscore'] = ret['score']
-						break
-					print('inc', rat['href'], '(%i)' % self.id)
+					try:
+						text = req.get(rat['href']).text
+						soup = BeautifulSoup(text, 'lxml')
+						a = pa.parse_anime(soup, write_image=False)
+						if a is not None:
+							a.fields['bscore'] = rat['score']
+							break
+					except:
+						pass
 					time.sleep(0.2)
 
 				# add to anime list
@@ -81,28 +101,27 @@ class Parser (thd.Thread):
 					for tag in a.tags:
 						tags[tag] = a.tags[tag]['desc']
 
+				# time
+				cur_time = dt.datetime.now()
+				delta = cur_time - start_time
+				t = delta.total_seconds() * ( len(rating) / al - 1 )
+
 				# print log
 				with stdout_lock:
 					print(
-						'anime #%i done (%.2f%%)' %
-						(a.fields['rating'], 100 * al / len(rating)),
+						'anime #%04i done, remain %2.2fs (%.2f%%)' %
+						(a.fields['rating'], t, 100 * al / len(rating)),
 						flush=True
 					)
-			except:
-				global th
-				print('bad', url)
+			except Exception as e:
+				print('bad', rat['href'], flush=True)
+				print(e)
 
 
 
 
 
 # rating functions
-def parse_one_page(url):
-	text = req.get(url).text
-	soup = BeautifulSoup(text, 'lxml')
-	anime = pa.parse_anime(soup)
-	pa.print_anime(anime)
-
 def parse_and_write_rating():
 	global rating
 	rating = pr.parse_rating()
@@ -119,10 +138,10 @@ def read_rating():
 # anime functions
 def parse_all_anime():
 	global rating, anime, total_time
+	global start_time, end_time
 	start_time = dt.datetime.now()
 
-	thread_count = 8
-	#  rating = rating[0:100]
+	thread_count = 32
 	ths = []
 
 	for i in range(thread_count):
@@ -145,12 +164,24 @@ def read_all_anime():
 	with open('anime.bin', 'rb') as file:
 		anime, tags, total_time = pickle.load(file)
 
+def anime2sql():
+	global anime
+	with open('anime.mysql', 'w') as file:
+		file.write(tosql.anime2sql(anime))
+		file.write('\n\n')
+		file.write(tosql.genre2sql(anime))
+		file.write('\n\n')
+		file.write(tosql.tags2sql(tags))
+		file.write('\n\n')
+		file.write(tosql.animetags2sql(anime))
+	return
+
 
 
 # print functions
-def print_all_anime():
+def print_all_anime(style='short'):
 	for a in anime:
-		pa.print_anime(a)
+		pa.print_anime(a, style=style)
 		print('\n'*10)
 
 def print_tags():
@@ -180,45 +211,27 @@ def calculate_states():
 		if a.annotation is not None:
 			max_ann_len = max(max_ann_len, len(a.annotation))
 		for com in a.coms:
-			max_com_len = max(max_com_len, len(com))
+			if com is not None:
+				max_com_len = max(max_com_len, len(com))
 
 
 
 
 
 # main
-#  read_all_anime()
+try: os.makedirs('images')
+except: pass
 
-
-#  with open('anime.mysql', 'w') as file:
-	#  file.write(tosql.anime_to_sql(anime))
-
-read_rating()
-for r in rating[:3]:
-	print(r)
-
-#  if len(anime) != len(rating):
-	#  raise Exception("Error!!!!")
-
-#  for a in anime:
-	#  a.fields['bscore'] = rating[a.fields['rating']-1]['score']
-
-#  for a in anime[4200:]:
-	#  print_anime(a)
-	#  print('\n'*5)
-
+#  read_rating()
 #  parse_all_anime()
 #  write_all_anime()
-
-#  time.sleep(5)
-
-#  calculate_states()
-#  print_all_anime()
-#  print_tags()
-#  print_common()
+read_all_anime()
+anime2sql()
+calculate_states()
+print_common()
 
 
 
 
 
-# END
+# end

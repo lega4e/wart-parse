@@ -3,6 +3,8 @@
 # отдельной страницы аниме с world-art
 #
 import re
+import requests as req
+import time
 
 from anime import Anime
 
@@ -11,7 +13,7 @@ from anime import Anime
 
 
 # functions
-def parse_anime(soup) -> Anime:
+def parse_anime(soup, write_image=False) -> Anime:
 	'''
 	Данная функция производит парсинг страницы
 	аниме с сайта world-art; на вход принимается
@@ -25,7 +27,6 @@ def parse_anime(soup) -> Anime:
 		name = '',
 		fields = {
 			'engname'  : { 'hint' : 'Название',          'tr' : null         },
-			'country'  : { 'hint' : 'Производство',      'tr' : null         },
 			'genre'    : { 'hint' : 'Жанр',              'tr' : genre_parse  },
 			'target'   : { 'hint' : 'Целевая аудитория', 'tr' : null         },
 			'type'     : { 'hint' : 'Тип',               'tr' : type_parse   },
@@ -39,7 +40,7 @@ def parse_anime(soup) -> Anime:
 		tags = {
 			#  'tagname' : {
 				#  'desc' : 'description...', 
-				#  'score' : int
+				#  'score' : float
 			#  }
 		},
 		annotation = None,
@@ -83,7 +84,11 @@ def parse_anime(soup) -> Anime:
 	if anime.fields['season'] is None:
 		tag = table.find(lambda tag: re.match('Выпуск', tag.text) is not None)
 		if tag is not None:
-			anime.fields['season'] = release_parse(tag.find_all('td')[2].text.strip())
+			anime.fields['season'] = date_parse(tag.find_all('td')[2].text.strip())
+		else:
+			tag = table.find(lambda tag: re.match('Премьера', tag.text) is not None)
+			if tag is not None:
+				anime.fields['season'] = date_parse(tag.find_all('td')[2].text.strip())
 
 	# tags
 	for tag in soup.select('.newtag'):
@@ -97,23 +102,56 @@ def parse_anime(soup) -> Anime:
 		anime.annotation = (
 			soup.center.find_all('table')[6].
 			tr.td.table.tr.contents[4].
-			contents[14].tr.td.p.text
+			contents[14].tr.td.p
 		)
+		if (
+			anime.annotation.text.strip() ==
+			"Для этого аниме есть описание (1), но вы можете написать ещё одно."
+		):
+			anime.annotation = None
+		else:
+			anime.annotation = anime.annotation.prettify()
+
 	except:
 		pass
 
 	# comments
 	try:
+		anime.coms = [ None, None, None ]
 		bestcoms = soup.find( lambda tag: tag.text.strip() == 'Лучшие отзывы на это аниме' )
 		t = nsib(bestcoms, 5)
-		anime.coms.append( com_parse(t.p) )
+		anime.coms[0] = t.p.prettify()
 		t = nsib(t, 6)
-		anime.coms.append( com_parse(t.p) )
+		anime.coms[1] = t.p.prettify()
 		t = nsib(t, 6)
-		anime.coms.append( com_parse(t.p) )
+		anime.coms[2] = t.p.prettify()
 	except:
 		pass
 
+	if not write_image or anime.fields['rating'] in [1233, 3016, 3334]:
+		return anime
+
+	rt = str(anime.fields['rating'])
+	fname = '0' * (4 - len(rt)) + rt + '. ' + anime.name
+	fname = re.sub(r'/', '|', fname)
+
+	src = soup.find(
+		lambda tag:
+			tag.name == 'img' and
+			tag.has_attr('alt') and
+			tag['alt'].startswith('постер аниме')
+	)['src']
+
+	content = None
+	while content is None:
+		content = req.get(src).content 
+		if content.startswith('<html>'.encode()):
+			content = None
+			time.sleep(0.1)
+
+	with open('images/' + fname + re.search(r'(\.\w+)$', src).group(1), 'wb') as file:
+		file.write(content)
+	
 	return anime
 
 
@@ -167,23 +205,28 @@ def genre_parse(genres : str) -> list:
 	return genres.split(', ')
 
 def type_parse(atype : str) -> dict:
-	res = {
-		'type' : 'tv'   if atype.startswith('ТВ') else
-				 'ova'  if atype.startswith('OVA') else
-				 'film' if atype.startswith('полнометражный фильм') else
-				 'unknown',
-	}
+	tmatch = re.match(r'[^(,]*', atype)
+	if tmatch is None:
+		res = { 'type' : None }
+	else:
+		res = { 'type' : tmatch.group(0).strip() }
 
-	if res['type'] == 'tv' or res['type'] == 'ova':
-		s = re.search(r'\([^\d]*(\d+).*\)', atype)
-		if s is None:
-			res['epsc'] = 1
-		else:
-			res['epsc'] = int(s.group(1))
-	elif res['type'] == 'film':
+	#  res = {
+		#  'type' : 'tv'    if atype.startswith('ТВ')                     else
+				 #  'ova'   if atype.startswith('OVA')                    else
+				 #  'film'  if atype.startswith('полнометражный фильм')   else
+				 #  'sfilm' if atype.startswith('короткометражный фильм') else
+				 #  'music' if atype.startswith('музыкальное видео')      else
+				 #  'music' if atype.startswith('рекламный ролик')        else
+				 #  'web'   if atype.startswith('Web')                    else
+				 #  'unknown',
+	#  }
+
+	s = re.search(r'\([^\d]*(\d+).*\)', atype)
+	if s is None:
 		res['epsc'] = 1
 	else:
-		res['epsc'] = None
+		res['epsc'] = int(s.group(1))
 	
 	s = re.search(r',[^\d]*(\d+)', atype)
 	if s is None:
@@ -203,15 +246,14 @@ def season_parse(season : str) -> dict:
 		}[season[:season.find('-')]]
 	}
 
-def release_parse(release : str) -> dict:
-	match = re.search(r'\d\d\.(\d\d)\.(\d\d\d\d)', release)
-	if match is None:
+def date_parse(date : str) -> dict:
+	m = re.search(r'(\d\d|\?\?)\.(\d\d|\?\?)\.(\d\d\d\d|\?\?\?\?)', date)
+	if m is None:
 		return { 'year' : None, 'season' : None }
-	month = int(match.group(1))
-	year  = int(match.group(2))
 	return {
-		'year'   : year,
-		'season' : ['зима', 'весна', 'лето', 'осень'][month % 12 // 3]
+		'year'   : None if m.group(3) == '????' else int(m.group(3)),
+		'season' : None if m.group(2) == '??'   else
+		[ 0, 1, 2, 3 ][int(m.group(2)) % 12 // 3]
 	}
 
 def score_parse(score : str) -> float:
